@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>KALEIDOSCOPE - Side Tap Switch</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
+<style>
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: #ffffff;
+  color: #f0f0f0;
+  font-family: sans-serif;
+  transition: background-color 2.5s ease;
+}
+canvas {
+  position: absolute;
+  inset: 0;
+}
+#controls {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 20px;
+  background: rgba(0,0,0,0.6);
+  border-radius: 8px;
+  display: flex;
+  gap: 15px;
+  z-index: 10;
+}
+label {
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+}
+input[type=range] { width: 120px; }
+</style>
+</head>
+
+<body>
+
+<div id="controls">
+  <input type="file" id="imageLoader" accept="image/*" multiple>
+  <label>回転
+    <input type="range" id="speedRange" min="-2" max="2" step="0.01" value="0.5">
+  </label>
+  <label>分割
+    <input type="range" id="sliceRange" min="0" max="24" step="1" value="12">
+  </label>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+// =====================
+// Canvas
+// =====================
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+function resize() {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+}
+resize();
+addEventListener("resize", resize);
+
+// =====================
+// State
+// =====================
+const imageLoader = document.getElementById("imageLoader");
+const speedRange = document.getElementById("speedRange");
+const sliceRange = document.getElementById("sliceRange");
+
+let images = [];
+let currentIndex = 0;
+let fade = 1;
+let angle = 0;
+let lastTime = 0;
+
+// =====================
+// 🎨 背景色
+// =====================
+let palette = [];
+let colorTimer;
+
+function createPalette(img) {
+  const c = document.createElement("canvas");
+  const x = c.getContext("2d");
+  c.width = c.height = 50;
+  x.drawImage(img, 0, 0, 50, 50);
+  const d = x.getImageData(0,0,50,50).data;
+
+  const colors = {};
+  for (let i=0;i<d.length;i+=40){
+    const hex =
+      ((d[i]<<16)|(d[i+1]<<8)|d[i+2])
+      .toString(16).padStart(6,"0");
+    colors[hex]=(colors[hex]||0)+1;
+  }
+  palette = Object.keys(colors)
+    .sort((a,b)=>colors[b]-colors[a])
+    .slice(0,4)
+    .map(h=>`#${h}`);
+}
+
+function startBg() {
+  clearInterval(colorTimer);
+  colorTimer = setInterval(()=>{
+    if(palette.length)
+      document.body.style.backgroundColor =
+        palette[Math.floor(Math.random()*palette.length)];
+  },3000);
+}
+
+// =====================
+// 📁 画像ロード
+// =====================
+imageLoader.addEventListener("change", ()=>{
+  images = [];
+  currentIndex = 0;
+  fade = 1;
+
+  [...imageLoader.files].forEach(file=>{
+    const img = new Image();
+    img.src = URL.createObjectURL(file);
+    img.onload = ()=>{
+      createPalette(img);
+      startBg();
+    };
+    images.push(img);
+  });
+});
+
+// =====================
+// 📱 側面タップ検知
+// =====================
+let lastTap = 0;
+const TAP_THRESHOLD = 18;
+const TAP_INTERVAL = 600;
+
+let motionEnabled = false;
+
+// iOS許可
+canvas.addEventListener("click", ()=>{
+  if (typeof DeviceMotionEvent?.requestPermission === "function") {
+    DeviceMotionEvent.requestPermission()
+      .then(res=>{ if(res==="granted") motionEnabled=true; });
+  } else {
+    motionEnabled = true;
+  }
+},{ once:true });
+
+addEventListener("devicemotion", e=>{
+  if(!motionEnabled || !images.length) return;
+  const a = e.accelerationIncludingGravity;
+  if(!a) return;
+
+  const force = Math.sqrt(a.x*a.x + a.y*a.y + a.z*a.z);
+  const now = Date.now();
+
+  if(force > TAP_THRESHOLD && now-lastTap > TAP_INTERVAL){
+    lastTap = now;
+    fade = 0;
+    currentIndex = (currentIndex + 1) % images.length;
+    createPalette(images[currentIndex]);
+  }
+});
+
+// =====================
+// 🎨 描画
+// =====================
+function draw(t){
+  requestAnimationFrame(draw);
+  if(!images.length) return;
+
+  const dt = lastTime ? (t-lastTime)/1000 : 0;
+  lastTime = t;
+
+  const w = canvas.width;
+  const h = canvas.height;
+  const cx = w/2;
+  const cy = h/2;
+  const r = Math.min(w,h)*0.48;
+
+  angle += speedRange.value * dt;
+
+  if(fade < 1) fade += 0.05;
+  ctx.globalAlpha = fade;
+  ctx.clearRect(0,0,w,h);
+
+  const img = images[currentIndex];
+  const scale = Math.max((r*2)/img.width,(r*2)/img.height)*1.4;
+  const iw = img.width*scale;
+  const ih = img.height*scale;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.clip();
+
+  const slices = +sliceRange.value;
+  if(!slices){
+    ctx.translate(cx,cy);
+    ctx.rotate(angle);
+    ctx.drawImage(img,-iw/2,-ih/2,iw,ih);
+  } else {
+    const sa = Math.PI*2/slices;
+    for(let i=0;i<slices;i++){
+      ctx.save();
+      ctx.translate(cx,cy);
+      ctx.rotate(sa*i + angle);
+      ctx.beginPath();
+      const w2 = r*1.8;
+      const h2 = Math.tan(sa/2)*w2;
+      ctx.moveTo(0,0);
+      ctx.lineTo(w2,-h2);
+      ctx.lineTo(w2,h2);
+      ctx.clip();
+      if(i%2) ctx.scale(-1,1);
+      ctx.drawImage(img,-iw/2,-ih/2,iw,ih);
+      ctx.restore();
+    }
+  }
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
+
